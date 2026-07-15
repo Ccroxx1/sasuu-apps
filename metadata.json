@@ -1,0 +1,6 @@
+{
+  "name": "Shield Browser",
+  "description": "A modern, secure, and privacy-focused web browser inspired by Brave, featuring ad-blocking, tracker prevention, custom dashboards, secure tab-lock, and AI capabilities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
