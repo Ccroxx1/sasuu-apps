@@ -674,6 +674,8 @@ class BrowserViewModel(
         }
     }
 }
+
+class BrowserViewModelFactory(
     private val application: Application,
     private val repository: BrowserRepository
 ) : ViewModelProvider.Factory {
