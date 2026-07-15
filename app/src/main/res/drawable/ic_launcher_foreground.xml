@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/ic_shield_logo"
+        android:drawable="@drawable/img_prosper_logo_1784143549114"
         android:gravity="center" />
 </layer-list>

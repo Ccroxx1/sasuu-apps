@@ -1,6 +1,11 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.view.ViewGroup
 import android.webkit.*
@@ -47,6 +52,7 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.security.AdBlocker
 import com.example.security.SecurityCenter
+import com.example.data.*
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -104,6 +110,8 @@ fun MainBrowserApp(viewModel: BrowserViewModel) {
                         Screen.TabManager -> TabManagerScreen(viewModel = viewModel)
                         Screen.Settings -> SettingsScreen(viewModel = viewModel)
                         Screen.SecurityCenterScreen -> SecurityCenterView(viewModel = viewModel)
+                        Screen.Extensions -> ExtensionsManagerScreen(viewModel = viewModel)
+                        Screen.Downloads -> DownloadsScreen(viewModel = viewModel)
                     }
                 }
             }
@@ -175,7 +183,7 @@ fun HomeScreen(viewModel: BrowserViewModel) {
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Shield Secure",
+                    text = "Prosper Secure",
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
@@ -191,6 +199,17 @@ fun HomeScreen(viewModel: BrowserViewModel) {
                         imageVector = if (isIncognito) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                         contentDescription = "Incognito Mode",
                         tint = if (isIncognito) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+
+                IconButton(
+                    onClick = { viewModel.navigateTo(Screen.Downloads) },
+                    modifier = Modifier.testTag("downloads_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "Downloads",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
 
@@ -235,7 +254,7 @@ fun HomeScreen(viewModel: BrowserViewModel) {
 
             // Dynamic Shield icon using custom drawable
             Image(
-                bitmap = ImageBitmap.imageResource(id = R.drawable.ic_shield_logo),
+                bitmap = ImageBitmap.imageResource(id = R.drawable.img_prosper_logo_1784143549114),
                 contentDescription = "Shield Logo",
                 modifier = Modifier
                     .size(100.dp)
@@ -247,7 +266,7 @@ fun HomeScreen(viewModel: BrowserViewModel) {
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "SHIELD",
+            text = "PROSPER",
             fontFamily = FontFamily.SansSerif,
             fontWeight = FontWeight.Bold,
             fontSize = 36.sp,
@@ -282,7 +301,7 @@ fun HomeScreen(viewModel: BrowserViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Shield Protection",
+                        text = "Prosper Protection",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = Color(0xFFE6E1E5)
@@ -483,7 +502,7 @@ fun HomeScreen(viewModel: BrowserViewModel) {
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Shield AI suggestions",
+                            text = "Prosper AI suggestions",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -781,10 +800,19 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     val urlInput by viewModel.urlInput.collectAsState()
     val desktopMode by viewModel.desktopModeEnabled.collectAsState()
     val blockScripts by viewModel.blockScripts.collectAsState()
+    val extensions by viewModel.extensions.collectAsState()
 
     val currentTab = allTabs.firstOrNull { it.id == activeTabId }
+    val currentTabUrl = if (currentTab != null && currentTab.url != "about:blank" && currentTab.url.isNotEmpty()) {
+        currentTab.url
+    } else if (urlInput.isNotEmpty() && urlInput != "about:blank") {
+        urlInput
+    } else {
+        "about:blank"
+    }
     val scope = rememberCoroutineScope()
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+    var lastLoadedUrl by remember { mutableStateOf("") }
     var pageProgress by remember { mutableIntStateOf(0) }
     var isSecure by remember { mutableStateOf(true) }
 
@@ -799,6 +827,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
 
     // Malware alert state
     var showMaliciousAlertUrl by remember { mutableStateOf<String?>(null) }
+    var bypassedUrls by remember { mutableStateOf(setOf<String>()) }
 
     Column(
         modifier = Modifier
@@ -897,7 +926,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                 .weight(1f)
                 .background(Color.White)
         ) {
-            if (currentTab != null && currentTab.url != "about:blank") {
+            if (currentTabUrl != "about:blank") {
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
@@ -917,6 +946,8 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                 displayZoomControls = false
                                 allowFileAccess = true
                                 mediaPlaybackRequiresUserGesture = false
+                                javaScriptCanOpenWindowsAutomatically = true
+                                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                             }
 
                             // Support cookies blocking
@@ -947,12 +978,49 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                 ): Boolean {
                                     val loadingUrl = request?.url?.toString() ?: ""
                                     
-                                    // Phishing & Malicious Alert check
-                                    if (SecurityCenter.isMaliciousUrl(loadingUrl)) {
+                                    // Phishing & Malicious Alert check (unless bypassed by user)
+                                    if (SecurityCenter.isMaliciousUrl(loadingUrl) && !bypassedUrls.contains(loadingUrl)) {
                                         showMaliciousAlertUrl = loadingUrl
                                         return true // Cancel loading
                                     }
+
+                                    // Intercept and download .torrent files directly instead of trying to load them as web pages
+                                    if (loadingUrl.contains(".torrent", ignoreCase = true)) {
+                                        viewModel.triggerDownload(loadingUrl)
+                                        Toast.makeText(view?.context, "Starting torrent download...", Toast.LENGTH_SHORT).show()
+                                        return true
+                                    }
+
+                                    // Handle non-web schemes (e.g. magnet:, mailto:, tel:, intent:)
+                                    if (!loadingUrl.startsWith("http://") && !loadingUrl.startsWith("https://") && !loadingUrl.startsWith("javascript:") && !loadingUrl.startsWith("file:") && !loadingUrl.startsWith("data:")) {
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(loadingUrl))
+                                            view?.context?.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            if (loadingUrl.startsWith("magnet:")) {
+                                                try {
+                                                     val clipboard = view?.context?.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                                     val clip = ClipData.newPlainText("Magnet Link", loadingUrl)
+                                                     clipboard?.setPrimaryClip(clip)
+                                                     Toast.makeText(view?.context, "No torrent client found. Magnet link copied to clipboard!", Toast.LENGTH_LONG).show()
+                                                } catch (clipEx: Exception) {
+                                                     Toast.makeText(view?.context, "No app found to open magnet link.", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                Toast.makeText(view?.context, "No app found to open: $loadingUrl", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        return true // Intercept/cancel loading in WebView
+                                    }
                                     return false
+                                }
+
+                                override fun onReceivedSslError(
+                                    view: WebView?,
+                                    handler: SslErrorHandler?,
+                                    error: android.net.http.SslError?
+                                ) {
+                                    handler?.proceed() // Proceed to allow access to every website
                                 }
 
                                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -967,7 +1035,14 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                     super.onPageFinished(view, url)
                                     pageProgress = 100
                                     url?.let {
-                                        viewModel.onPageLoaded(it, view?.title ?: "Shield Web")
+                                        viewModel.onPageLoaded(it, view?.title ?: "Prosper Web")
+                                        lastLoadedUrl = it
+                                        // Evaluate all enabled custom & built-in extensions/userscripts
+                                        extensions.forEach { extension ->
+                                            if (extension.isEnabled && extension.jsCode.isNotEmpty()) {
+                                                view?.evaluateJavascript(extension.jsCode, null)
+                                            }
+                                        }
                                         
                                         // Extract page content for AI reading assistant
                                         view?.evaluateJavascript(
@@ -990,20 +1065,23 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                     super.onReceivedTitle(view, title)
                                     val currentUrl = view?.url ?: ""
                                     if (currentUrl.isNotEmpty() && currentUrl != "about:blank") {
-                                        viewModel.onPageLoaded(currentUrl, title ?: "Shield Web")
+                                        viewModel.onPageLoaded(currentUrl, title ?: "Prosper Web")
+                                         lastLoadedUrl = currentUrl
                                     }
                                 }
                             }
 
                             setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
                                 viewModel.triggerDownload(url)
-                                Toast.makeText(ctx, "Download Intercepted by Shield Safeguard!", Toast.LENGTH_SHORT).show()
+                                val filename = url.substringAfterLast("/").substringBefore("?").ifBlank { "file" }
+                                Toast.makeText(ctx, "Starting download: $filename", Toast.LENGTH_SHORT).show()
                             }
 
                             webViewInstance = this
                             
                             // Set initial load
-                            loadUrl(currentTab.url)
+                            loadUrl(currentTabUrl)
+                            lastLoadedUrl = currentTabUrl
                         }
                     },
                     update = { view ->
@@ -1015,8 +1093,11 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                         view.settings.javaScriptEnabled = !blockScripts
                         
                         // Navigate WebView if URL changed outside
-                        if (currentTab != null && view.url != currentTab.url) {
-                            view.loadUrl(currentTab.url)
+                        val normalizedViewUrl = view.url?.removeSuffix("/") ?: ""
+                        val normalizedTabUrl = currentTabUrl.removeSuffix("/")
+                        if (normalizedViewUrl != normalizedTabUrl && currentTabUrl != lastLoadedUrl) {
+                            view.loadUrl(currentTabUrl)
+                            lastLoadedUrl = currentTabUrl
                         }
                     },
                     modifier = Modifier.fillMaxSize()
@@ -1065,7 +1146,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Shield Protection classified the site \"$maliciousUrl\" as suspicious (Phishing, scam or malicious malware risk).",
+                                text = "Prosper Protection classified the site \"$maliciousUrl\" as suspicious (Phishing, scam or malicious malware risk).",
                                 color = Color.White.copy(alpha = 0.8f),
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -1085,6 +1166,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             TextButton(
                                 onClick = {
                                     showMaliciousAlertUrl = null
+                                    bypassedUrls = bypassedUrls + maliciousUrl
                                     webViewInstance?.loadUrl(maliciousUrl)
                                 }
                             ) {
@@ -1179,11 +1261,11 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Default.Shield,
-                        contentDescription = "Shield Protection",
+                        contentDescription = "Prosper Protection",
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Shield Shields Protection")
+                    Text("Prosper Protection")
                 }
             },
             text = {
@@ -1266,7 +1348,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                     ) {
                         Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = "AI Summary", tint = Color(0xFFFBBF24))
                         Spacer(modifier = Modifier.width(16.dp))
-                        Text("Shield AI Summarize Page")
+                        Text("Prosper AI Summarize Page")
                     }
 
                     Row(
@@ -1306,6 +1388,40 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             .fillMaxWidth()
                             .clickable {
                                 showMenu = false
+                                viewModel.navigateTo(Screen.Extensions)
+                            }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Extension, contentDescription = "Extensions", tint = Color(0xFFA78BFA))
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text("Add-ons, Extensions, or Extension Store")
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showMenu = false
+                                viewModel.navigateTo(Screen.Downloads)
+                            }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Download, contentDescription = "Downloads", tint = Color(0xFF60A5FA))
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text("Downloads")
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showMenu = false
                                 viewModel.navigateTo(Screen.Settings)
                             }
                             .padding(vertical = 12.dp),
@@ -1335,7 +1451,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = "AI", tint = Color(0xFFFBBF24))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Shield AI Webpage Summary")
+                    Text("Prosper AI Webpage Summary")
                 }
             },
             text = {
@@ -1352,7 +1468,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                         ) {
                             CircularProgressIndicator()
                             Spacer(modifier = Modifier.height(12.dp))
-                            Text("Shield AI is reading the page...")
+                            Text("Prosper AI is reading the page...")
                         }
                     } else {
                         Text(
@@ -1385,7 +1501,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                 showTranslationPanel = false
                 viewModel.clearAiTranslation()
             },
-            title = { Text("Shield AI Web Translation") },
+            title = { Text("Prosper AI Web Translation") },
             text = {
                 Column {
                     if (translation == null) {
@@ -1406,7 +1522,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             onClick = { viewModel.translateCurrentPage(selectedLang) },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Translate with Shield AI")
+                            Text("Translate with Prosper AI")
                         }
                     } else {
                         Box(
@@ -1474,7 +1590,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
                                         Text(
-                                            text = if (msg.sender == "user") "You" else "Shield Assistant",
+                                            text = if (msg.sender == "user") "You" else "Prosper Assistant",
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 11.sp,
                                             color = MaterialTheme.colorScheme.primary
@@ -1720,7 +1836,7 @@ fun SettingsScreen(viewModel: BrowserViewModel) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Shield Core Settings") },
+                title = { Text("Prosper Core Settings") },
                 navigationIcon = {
                     IconButton(onClick = { viewModel.navigateTo(Screen.Home) }) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
@@ -1931,7 +2047,7 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Shield Security Center") },
+                title = { Text("Prosper Security Center") },
                 navigationIcon = {
                     IconButton(onClick = { viewModel.navigateTo(Screen.Home) }) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
@@ -1956,7 +2072,7 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
                     Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
                             imageVector = Icons.Default.Shield,
-                            contentDescription = "Shield Guard",
+                            contentDescription = "Prosper Guard",
                             tint = if (shieldEnabled) Color(0xFF10B981) else Color(0xFFEF4444),
                             modifier = Modifier.size(56.dp)
                         )
@@ -1969,10 +2085,46 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Shield Browser uses a unique integrated sandboxed ad and tracker blocker alongside Google's safe web API to isolate and block threats.",
+                            text = "Prosper Browser uses a unique integrated sandboxed ad and tracker blocker alongside Google's safe web API to isolate and block threats.",
                             textAlign = TextAlign.Center,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            }
+
+            item {
+                val allowSuspicious by viewModel.allowSuspiciousDownloads.collectAsState()
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Bypass Download Safe-Guard",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Allow downloading all files (.apk, .exe, .torrent) without safety warning flags or file isolation.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Switch(
+                            checked = allowSuspicious,
+                            onCheckedChange = { viewModel.setAllowSuspiciousDownloads(it) }
                         )
                     }
                 }
@@ -2086,6 +2238,59 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
                                     fontSize = 11.sp
                                 )
                             }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (download.isSuspicious) {
+                                    TextButton(
+                                        onClick = { viewModel.deleteDownload(download.id) }
+                                    ) {
+                                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { 
+                                            viewModel.keepDownloadAnyway(download.id)
+                                            Toast.makeText(context, "File deisolated and saved successfully!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF97316))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Shield, 
+                                            contentDescription = "Deisolate", 
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Keep Anyway", fontSize = 12.sp, color = Color.White)
+                                    }
+                                } else {
+                                    TextButton(
+                                        onClick = { viewModel.deleteDownload(download.id) }
+                                    ) {
+                                        Text("Delete")
+                                    }
+                                    if (download.isComplete) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Button(
+                                            onClick = {
+                                                Toast.makeText(context, "Opening file: ${download.fileName}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowForward, 
+                                                contentDescription = "Open", 
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Open", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2093,3 +2298,926 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun ExtensionsManagerScreen(viewModel: BrowserViewModel) {
+    val extensions by viewModel.extensions.collectAsState()
+    
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var viewJsCodeDialog by remember { mutableStateOf<BrowserExtension?>(null) }
+    
+    var newExtName by remember { mutableStateOf("") }
+    var newExtDesc by remember { mutableStateOf("") }
+    var newExtJs by remember { mutableStateOf("") }
+    
+    var selectedTab by remember { mutableStateOf(0) }
+    var searchQuery by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    val storeExtensions = remember {
+        listOf(
+            BrowserExtension(
+                name = "AdGuard AdBlocker",
+                description = "Powerful ad blocking extension that blocks ads, popups, and trackers for faster and safer browsing.",
+                version = "4.3",
+                author = "AdGuard Team",
+                jsCode = """
+                    (function() {
+                        if (window.adguardActive) return;
+                        window.adguardActive = true;
+                        const adSelectors = [
+                            'iframe[src*="doubleclick"]', 'iframe[src*="amazon-adsystem"]', 'iframe[src*="adnxs"]',
+                            'div[class*="ad-container"]', 'div[class*="ad-banner"]', 'div[id*="google_ads_iframe"]',
+                            '.ad-box', '.ad-wrapper', '.adsbygoogle', '.advertisement', '#ad-slot', '.ad-slot'
+                        ];
+                        function removeAds() {
+                            adSelectors.forEach(sel => {
+                                document.querySelectorAll(sel).forEach(el => el.remove());
+                            });
+                        }
+                        removeAds();
+                        setInterval(removeAds, 1500);
+                        console.log("AdGuard AdBlocker successfully active on " + window.location.host);
+                    })();
+                """.trimIndent(),
+                isEnabled = true,
+                isBuiltIn = false
+            ),
+            BrowserExtension(
+                name = "HTTPS Everywhere",
+                description = "Automatically encrypts your communications with many major websites, making your browsing more secure.",
+                version = "2024.5",
+                author = "EFF",
+                jsCode = """
+                    (function() {
+                        if (window.location.protocol === "http:") {
+                            window.location.replace("https://" + window.location.host + window.location.pathname + window.location.search);
+                        }
+                    })();
+                """.trimIndent(),
+                isEnabled = true,
+                isBuiltIn = false
+            ),
+            BrowserExtension(
+                name = "Grammarly Assistant",
+                description = "Helps you write clearly and mistake-free on any website with real-time spelling and grammar checks.",
+                version = "2.1",
+                author = "Grammarly",
+                jsCode = """
+                    (function() {
+                        console.log("Grammarly active on this page.");
+                    })();
+                """.trimIndent(),
+                isEnabled = true,
+                isBuiltIn = false
+            ),
+            BrowserExtension(
+                name = "Dark Theme Enforcer",
+                description = "Forces custom high-contrast dark themes on any light website to prevent eye strain at night.",
+                version = "2.0",
+                author = "Eye Saver Co.",
+                jsCode = """
+                    (function() {
+                        if (document.getElementById('eye-saver-dark-theme')) return;
+                        var style = document.createElement('style');
+                        style.id = 'eye-saver-dark-theme';
+                        style.innerHTML = 'html, body { background-color: #1a1a1a !important; color: #f0f0f0 !important; }';
+                        document.head.appendChild(style);
+                    })();
+                """.trimIndent(),
+                isEnabled = true,
+                isBuiltIn = false
+            )
+        )
+    }
+
+    val filteredStoreExtensions = remember(searchQuery) {
+        if (searchQuery.isBlank()) {
+            storeExtensions
+        } else {
+            storeExtensions.filter {
+                it.name.contains(searchQuery, ignoreCase = true) ||
+                it.description.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
+
+    val templates = listOf(
+        Pair("Highlight Images", "(function() { document.querySelectorAll('img').forEach(img => img.style.border = '5px solid red'); })();"),
+        Pair("Green Backdrop", "(function() { document.body.style.backgroundColor = '#d1fae5'; })();"),
+        Pair("Force Sans Font", "(function() { var style = document.createElement('style'); style.innerHTML = '* { font-family: sans-serif !important; }'; document.head.appendChild(style); })();"),
+        Pair("Show Metadata", "(function() { alert('Title: ' + document.title + '\\nURL: ' + window.location.href); })();")
+    )
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Browser Extensions") },
+                navigationIcon = {
+                    IconButton(onClick = { viewModel.navigateTo(Screen.Browser) }) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back to Browser")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showCreateDialog = true }) {
+                        Icon(imageVector = Icons.Default.Add, contentDescription = "Add Custom Script")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showCreateDialog = true },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(imageVector = Icons.Default.Add, contentDescription = "Add Extension")
+            }
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary
+            ) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("Installed", fontWeight = FontWeight.Bold) }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("Extension Store", fontWeight = FontWeight.Bold) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (selectedTab == 0) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Extensions & Userscripts",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Text(
+                        text = "Toggle built-in scripts or inject custom JavaScript tools to customize your browsing experience. Scripts execute automatically when pages finish loading.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    
+                    if (extensions.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Extension,
+                                    contentDescription = "No Extensions",
+                                    modifier = Modifier.size(64.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "No Extensions Installed",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Tap the '+' button or visit the Extension Store to install your first script!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                )
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(extensions) { extension ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (extension.isEnabled) 
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.12f)
+                                        else 
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                    ),
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = if (extension.isEnabled) 
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                        else 
+                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = extension.name,
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    
+                                                    SuggestionChip(
+                                                        onClick = {},
+                                                        label = { 
+                                                            Text(
+                                                                text = if (extension.isBuiltIn) "Built-in" else "Custom",
+                                                                fontSize = 10.sp
+                                                            ) 
+                                                        },
+                                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                                            containerColor = if (extension.isBuiltIn)
+                                                                MaterialTheme.colorScheme.secondaryContainer
+                                                            else
+                                                                MaterialTheme.colorScheme.tertiaryContainer
+                                                        )
+                                                    )
+                                                }
+                                                Text(
+                                                    text = "v${extension.version} • By ${extension.author}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                                )
+                                            }
+                                            
+                                            Switch(
+                                                checked = extension.isEnabled,
+                                                onCheckedChange = { viewModel.toggleExtension(extension) }
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        
+                                        Text(
+                                            text = extension.description,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                        )
+                                        
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier
+                                                    .clickable { viewJsCodeDialog = extension }
+                                                    .padding(vertical = 4.dp, horizontal = 8.dp)
+                                                    .background(
+                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                                        shape = RoundedCornerShape(4.dp)
+                                                    )
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Code,
+                                                    contentDescription = "Code",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = "View JS Code",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            
+                                            if (!extension.isBuiltIn) {
+                                                IconButton(
+                                                    onClick = { viewModel.deleteExtension(extension) },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Delete,
+                                                        contentDescription = "Delete",
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 16.dp)
+                ) {
+                    Text(
+                        text = "Official Extension Store",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                    Text(
+                        text = "Browse, search, and install powerful third-party extensions directly into your safe browser.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        placeholder = { Text("Search Extensions (e.g. AdGuard)...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (filteredStoreExtensions.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "No Results",
+                                    modifier = Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "No extensions found matching '$searchQuery'",
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(filteredStoreExtensions) { storeExt ->
+                                val isInstalled = extensions.any { it.name == storeExt.name }
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    ),
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = storeExt.name,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = "v${storeExt.version} • By ${storeExt.author}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                                )
+                                            }
+                                            
+                                            Spacer(modifier = Modifier.width(8.dp))
+
+                                            if (isInstalled) {
+                                                Button(
+                                                    onClick = {},
+                                                    enabled = false,
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                                        disabledContentColor = MaterialTheme.colorScheme.primary
+                                                    )
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = "Installed",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Installed", fontSize = 12.sp)
+                                                }
+                                            } else {
+                                                Button(
+                                                    onClick = {
+                                                        viewModel.addCustomExtension(
+                                                            name = storeExt.name,
+                                                            description = storeExt.description,
+                                                            jsCode = storeExt.jsCode,
+                                                            version = storeExt.version,
+                                                            author = storeExt.author,
+                                                            isBuiltIn = false
+                                                        )
+                                                        Toast.makeText(context, "${storeExt.name} installed successfully! Please enable it in the 'Installed' tab.", Toast.LENGTH_LONG).show()
+                                                        selectedTab = 0 // Switch to installed list so they can enable it!
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Download,
+                                                        contentDescription = "Install",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Install", fontSize = 12.sp)
+                                                }
+                                            }
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        
+                                        Text(
+                                            text = storeExt.description,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateDialog = false },
+            title = { Text("Install New Extension") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newExtName,
+                        onValueChange = { newExtName = it },
+                        label = { Text("Extension Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("e.g. My Custom Script") }
+                    )
+                    
+                    OutlinedTextField(
+                        value = newExtDesc,
+                        onValueChange = { newExtDesc = it },
+                        label = { Text("Description") },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("What does this script do?") }
+                    )
+                    
+                    Column {
+                        Text(
+                            text = "JavaScript Code",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Code executes automatically when a webpage finishes loading.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        
+                        OutlinedTextField(
+                            value = newExtJs,
+                            onValueChange = { newExtJs = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(120.dp),
+                            placeholder = { Text("(function() {\n  // Write JS here\n})();") },
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+
+                    Text(
+                        text = "Or tap a template below to load code:",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        templates.forEach { (name, code) ->
+                            InputChip(
+                                selected = false,
+                                onClick = {
+                                    newExtName = name
+                                    newExtDesc = "Custom script that highlights or overrides styles."
+                                    newExtJs = code
+                                },
+                                label = { Text(name, fontSize = 10.sp) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newExtName.isNotBlank() && newExtJs.isNotBlank()) {
+                            viewModel.addCustomExtension(newExtName, newExtDesc, newExtJs)
+                            newExtName = ""
+                            newExtDesc = ""
+                            newExtJs = ""
+                            showCreateDialog = false
+                        }
+                    }
+                ) {
+                    Text("Install")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        newExtName = ""
+                        newExtDesc = ""
+                        newExtJs = ""
+                        showCreateDialog = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    val currentViewJsExtension = viewJsCodeDialog
+    if (currentViewJsExtension != null) {
+        AlertDialog(
+            onDismissRequest = { viewJsCodeDialog = null },
+            title = { Text(currentViewJsExtension.name) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "JavaScript Source:",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            text = currentViewJsExtension.jsCode,
+                            style = androidx.compose.ui.text.TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { viewJsCodeDialog = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+}
+
+// --- DOWNLOADS PROGRESS & FILES VIEW ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DownloadsScreen(viewModel: BrowserViewModel) {
+    val downloads by viewModel.downloads.collectAsState()
+    val context = LocalContext.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Downloads") },
+                navigationIcon = {
+                    IconButton(
+                        onClick = { viewModel.navigateTo(Screen.Home) },
+                        modifier = Modifier.testTag("downloads_back_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+            )
+        }
+    ) { innerPadding ->
+        if (downloads.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = "No Downloads",
+                        modifier = Modifier.size(72.dp),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "No Downloads Yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Files you download from the web will appear here.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(downloads) { item ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("download_item_${item.id}"),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (item.isSuspicious) {
+                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            }
+                        ),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (item.isSuspicious) {
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            }
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = if (item.isSuspicious) Icons.Default.Warning else Icons.Default.Description,
+                                        contentDescription = "File Type",
+                                        tint = if (item.isSuspicious) {
+                                            MaterialTheme.colorScheme.error
+                                        } else if (item.isComplete) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = item.fileName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = if (item.isSuspicious) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = item.url,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                        )
+                                    }
+                                }
+                                
+                                IconButton(onClick = { viewModel.deleteDownload(item.id) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete Download",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (item.isSuspicious) {
+                                // Security Warning Box
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(
+                                            text = "Malware Detected!",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "This file is flagged as suspicious. Opening it may harm your device.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.End,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            TextButton(
+                                                onClick = { viewModel.deleteDownload(item.id) },
+                                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)
+                                            ) {
+                                                Text("Discard")
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Button(
+                                                onClick = { viewModel.keepDownloadAnyway(item.id) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                            ) {
+                                                Text("Keep Anyway", color = Color.White)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Normal Progress and Info
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (item.isComplete) "Completed" else "Downloading: ${item.progress}%",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (item.isComplete) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = formatDownloadBytes(item.sizeBytes),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                LinearProgressIndicator(
+                                    progress = { item.progress / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = if (item.isComplete) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                                )
+
+                                if (item.isComplete) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                Toast.makeText(context, "Opening file: ${item.fileName}", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.testTag("open_file_button_${item.id}")
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Launch,
+                                                    contentDescription = "Open File",
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Open File")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Simple bytes formatting helper
+private fun formatDownloadBytes(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val exp = (Math.log(bytes.toDouble()) / Math.log(1024.0)).toInt()
+    val pre = "KMGTPE"[exp - 1].toString()
+    return String.format(java.util.Locale.US, "%.1f %sB", bytes / Math.pow(1024.0, exp.toDouble()), pre)
+}
+

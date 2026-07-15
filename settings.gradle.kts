@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Shield Browser"
+rootProject.name = "Prosper Browser"
 
 include(":app")

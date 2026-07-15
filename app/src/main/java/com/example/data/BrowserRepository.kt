@@ -94,4 +94,20 @@ class BrowserRepository(private val browserDao: BrowserDao) {
     suspend fun removeShortcut(shortcut: QuickShortcut) = withContext(Dispatchers.IO) {
         browserDao.deleteShortcut(shortcut)
     }
+
+
+    // --- Browser Extensions ---
+    val allExtensions: Flow<List<BrowserExtension>> = browserDao.getAllExtensions()
+
+    suspend fun addExtension(extension: BrowserExtension) = withContext(Dispatchers.IO) {
+        browserDao.insertExtension(extension)
+    }
+
+    suspend fun updateExtension(extension: BrowserExtension) = withContext(Dispatchers.IO) {
+        browserDao.updateExtension(extension)
+    }
+
+    suspend fun removeExtension(extension: BrowserExtension) = withContext(Dispatchers.IO) {
+        browserDao.deleteExtension(extension)
+    }
 }

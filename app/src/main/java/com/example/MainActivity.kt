@@ -15,6 +15,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Pre-create WebView Code Cache directories to prevent Chromium E/chromium logcat errors
+        try {
+            val cacheDir = applicationContext.cacheDir
+            val jsDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+            if (!jsDir.exists()) {
+                jsDir.mkdirs()
+            }
+            val wasmDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/wasm")
+            if (!wasmDir.exists()) {
+                wasmDir.mkdirs()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
         // Initialize Database & Repository
         val database = BrowserDatabase.getDatabase(applicationContext)
         val repository = BrowserRepository(database.browserDao())

@@ -51,3 +51,16 @@ data class QuickShortcut(
     val url: String,
     val iconUrl: String? = null
 )
+
+@Entity(tableName = "browser_extensions")
+data class BrowserExtension(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val name: String,
+    val description: String,
+    val version: String = "1.0",
+    val author: String = "User",
+    val jsCode: String,
+    val isEnabled: Boolean = true,
+    val isBuiltIn: Boolean = false
+)
+

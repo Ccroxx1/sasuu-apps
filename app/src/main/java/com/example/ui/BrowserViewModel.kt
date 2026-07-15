@@ -48,6 +48,8 @@ sealed interface Screen {
     object TabManager : Screen
     object Settings : Screen
     object SecurityCenterScreen : Screen
+    object Extensions : Screen
+    object Downloads : Screen
 }
 
 class BrowserViewModel(
@@ -148,6 +150,66 @@ class BrowserViewModel(
     private val _downloads = MutableStateFlow<List<DownloadItem>>(emptyList())
     val downloads: StateFlow<List<DownloadItem>> = _downloads.asStateFlow()
 
+    private val _allowSuspiciousDownloads = MutableStateFlow(false)
+    val allowSuspiciousDownloads: StateFlow<Boolean> = _allowSuspiciousDownloads.asStateFlow()
+
+    fun setAllowSuspiciousDownloads(enabled: Boolean) {
+        _allowSuspiciousDownloads.value = enabled
+    }
+
+    fun keepDownloadAnyway(downloadId: String) {
+        _downloads.value = _downloads.value.map {
+            if (it.id == downloadId) {
+                it.copy(isSuspicious = false)
+            } else {
+                it
+            }
+        }
+    }
+
+    fun deleteDownload(downloadId: String) {
+        _downloads.value = _downloads.value.filter { it.id != downloadId }
+    }
+
+    // --- Browser Extensions ---
+    val extensions: StateFlow<List<BrowserExtension>> = repository.allExtensions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun toggleExtension(extension: BrowserExtension) {
+        viewModelScope.launch {
+            repository.updateExtension(extension.copy(isEnabled = !extension.isEnabled))
+        }
+    }
+
+    fun addCustomExtension(
+        name: String,
+        description: String,
+        jsCode: String,
+        version: String = "1.0",
+        author: String = "User",
+        isBuiltIn: Boolean = false
+    ) {
+        viewModelScope.launch {
+            repository.addExtension(
+                BrowserExtension(
+                    name = name,
+                    description = description,
+                    jsCode = jsCode,
+                    version = version,
+                    author = author,
+                    isEnabled = true,
+                    isBuiltIn = isBuiltIn
+                )
+            )
+        }
+    }
+
+    fun deleteExtension(extension: BrowserExtension) {
+        viewModelScope.launch {
+            repository.removeExtension(extension)
+        }
+    }
+
     // --- Active Page States (Current Web Page content extracted) ---
     private val _currentPageText = MutableStateFlow("")
     val currentPageText: StateFlow<String> = _currentPageText.asStateFlow()
@@ -210,7 +272,8 @@ class BrowserViewModel(
             )
             
             // Mark all other tabs as inactive
-            allTabs.value.filter { it.isIncognito == _isIncognitoMode.value }.forEach {
+            val currentTabsList = repository.allTabs.first()
+            currentTabsList.filter { it.isIncognito == _isIncognitoMode.value }.forEach {
                 repository.updateTab(it.copy(isActive = false))
             }
 
@@ -228,10 +291,11 @@ class BrowserViewModel(
 
     fun switchTab(tabId: String) {
         viewModelScope.launch {
-            val tab = allTabs.value.firstOrNull { it.id == tabId } ?: return@launch
+            val currentTabsList = repository.allTabs.first()
+            val tab = currentTabsList.firstOrNull { it.id == tabId } ?: return@launch
             
             // Set all same mode tabs to inactive, set this one to active
-            allTabs.value.forEach {
+            currentTabsList.forEach {
                 if (it.id == tabId) {
                     repository.updateTab(it.copy(isActive = true))
                 } else if (it.isActive && it.isIncognito == tab.isIncognito) {
@@ -257,7 +321,8 @@ class BrowserViewModel(
             
             // If we closed the active tab, switch to another tab
             if (_activeTabId.value == tabId) {
-                val remaining = allTabs.value.filter { it.id != tabId && it.isIncognito == _isIncognitoMode.value }
+                val currentTabsList = repository.allTabs.first()
+                val remaining = currentTabsList.filter { it.id != tabId && it.isIncognito == _isIncognitoMode.value }
                 if (remaining.isNotEmpty()) {
                     switchTab(remaining.first().id)
                 } else {
@@ -275,7 +340,8 @@ class BrowserViewModel(
         
         // Find or create active tab in this mode
         viewModelScope.launch {
-            val sameModeTabs = allTabs.value.filter { it.isIncognito == isIncognito }
+            val currentTabsList = repository.allTabs.first()
+            val sameModeTabs = currentTabsList.filter { it.isIncognito == isIncognito }
             if (sameModeTabs.isEmpty()) {
                 createNewTab("Home", "about:blank")
             } else {
@@ -314,11 +380,42 @@ class BrowserViewModel(
         // Update active tab URL
         viewModelScope.launch {
             val activeId = _activeTabId.value
+            var tabUpdated = false
+            val currentTabsList = repository.allTabs.first()
+            
             if (activeId != null) {
-                val activeTab = allTabs.value.firstOrNull { it.id == activeId }
+                val activeTab = currentTabsList.firstOrNull { it.id == activeId }
                 if (activeTab != null) {
                     repository.updateTab(activeTab.copy(url = targetUrl))
+                    tabUpdated = true
                 }
+            }
+            
+            // Fallback 1: If no active tab matched the ID, find any active tab in this mode
+            if (!tabUpdated) {
+                val activeTab = currentTabsList.firstOrNull { it.isActive && it.isIncognito == _isIncognitoMode.value }
+                if (activeTab != null) {
+                    repository.updateTab(activeTab.copy(url = targetUrl))
+                    _activeTabId.value = activeTab.id
+                    tabUpdated = true
+                }
+            }
+            
+            // Fallback 2: Create a new tab
+            if (!tabUpdated) {
+                val uuid = UUID.randomUUID().toString()
+                val newTab = TabItem(
+                    id = uuid,
+                    title = "New Tab",
+                    url = targetUrl,
+                    isIncognito = _isIncognitoMode.value,
+                    isActive = true
+                )
+                currentTabsList.filter { it.isIncognito == _isIncognitoMode.value }.forEach {
+                    repository.updateTab(it.copy(isActive = false))
+                }
+                repository.addTab(newTab)
+                _activeTabId.value = uuid
             }
         }
     }
@@ -327,15 +424,18 @@ class BrowserViewModel(
         _urlInput.value = url
         _currentPageTitle.value = title
         
-        // Save to History (if not incognito)
-        if (!isIncognitoMode.value && url != "about:blank" && url.isNotEmpty()) {
-            viewModelScope.launch {
+        viewModelScope.launch {
+            // Save to History (if not incognito)
+            if (!isIncognitoMode.value && url != "about:blank" && url.isNotEmpty()) {
                 repository.addHistoryItem(HistoryItem(title = title, url = url))
-                
-                // Update active tab model with the correct title and url
+            }
+            
+            // Update active tab model with the correct title and url (for both regular and incognito)
+            if (url != "about:blank" && url.isNotEmpty()) {
                 val activeId = _activeTabId.value
                 if (activeId != null) {
-                    val activeTab = allTabs.value.firstOrNull { it.id == activeId }
+                    val currentTabsList = repository.allTabs.first()
+                    val activeTab = currentTabsList.firstOrNull { it.id == activeId }
                     if (activeTab != null) {
                         repository.updateTab(activeTab.copy(title = title, url = url))
                     }
@@ -476,7 +576,7 @@ class BrowserViewModel(
     fun triggerDownload(url: String) {
         val fileName = url.substringAfterLast("/").substringBefore("?").ifBlank { "downloaded_file" }
         val size = (100_000..5_000_000).random().toLong()
-        val isSuspicious = SecurityCenter.isSuspiciousDownload(fileName)
+        val isSuspicious = if (_allowSuspiciousDownloads.value) false else SecurityCenter.isSuspiciousDownload(fileName)
         
         val newItem = DownloadItem(
             id = UUID.randomUUID().toString(),

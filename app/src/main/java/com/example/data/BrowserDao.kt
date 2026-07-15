@@ -85,4 +85,18 @@ interface BrowserDao {
 
     @Delete
     suspend fun deleteShortcut(shortcut: QuickShortcut)
+
+
+    // --- Browser Extensions ---
+    @Query("SELECT * FROM browser_extensions")
+    fun getAllExtensions(): Flow<List<BrowserExtension>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExtension(extension: BrowserExtension)
+
+    @Update
+    suspend fun updateExtension(extension: BrowserExtension)
+
+    @Delete
+    suspend fun deleteExtension(extension: BrowserExtension)
 }
