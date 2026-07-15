@@ -1,10 +1,14 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.WebStorage
 import android.webkit.WebView
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -17,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 enum class SearchEngine(val title: String, val searchUrl: String) {
@@ -33,7 +38,8 @@ data class DownloadItem(
     val progress: Int, // 0 to 100
     val isComplete: Boolean,
     val sizeBytes: Long,
-    val isSuspicious: Boolean = false
+    val isSuspicious: Boolean = false,
+    val filePath: String? = null // Path to the saved file on device
 )
 
 data class ChatMessage(
@@ -578,6 +584,15 @@ class BrowserViewModel(
         val size = (100_000..5_000_000).random().toLong()
         val isSuspicious = if (_allowSuspiciousDownloads.value) false else SecurityCenter.isSuspiciousDownload(fileName)
         
+        // Create the downloads directory in app's cache
+        val downloadsDir = File(getApplication<Application>().cacheDir, "downloads").apply {
+            if (!exists()) mkdirs()
+        }
+        
+        // Create the file in the downloads directory
+        val downloadFile = File(downloadsDir, fileName)
+        val filePath = downloadFile.absolutePath
+        
         val newItem = DownloadItem(
             id = UUID.randomUUID().toString(),
             fileName = fileName,
@@ -585,13 +600,21 @@ class BrowserViewModel(
             progress = 0,
             isComplete = false,
             sizeBytes = size,
-            isSuspicious = isSuspicious
+            isSuspicious = isSuspicious,
+            filePath = filePath
         )
 
         _downloads.value = listOf(newItem) + _downloads.value
 
         // Simulate progress download in a fast coroutine
         viewModelScope.launch {
+            // Create dummy file content (simulating downloaded file)
+            try {
+                downloadFile.writeText("This is a downloaded file from: $url\n\nFile name: $fileName")
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            
             var progress = 0
             while (progress < 100) {
                 kotlinx.coroutines.delay(200)
@@ -602,6 +625,52 @@ class BrowserViewModel(
                     if (it.id == newItem.id) it.copy(progress = progress, isComplete = progress == 100) else it
                 }
             }
+        }
+    }
+
+    fun openDownload(downloadItem: DownloadItem, context: Context) {
+        val filePath = downloadItem.filePath ?: return
+        val file = File(filePath)
+        
+        if (!file.exists()) {
+            return
+        }
+        
+        try {
+            // Get MIME type from file extension
+            val extension = file.extension.ifEmpty { "txt" }
+            val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) 
+                ?: when (extension.lowercase()) {
+                    "pdf" -> "application/pdf"
+                    "txt" -> "text/plain"
+                    "doc", "docx" -> "application/msword"
+                    "xls", "xlsx" -> "application/vnd.ms-excel"
+                    "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+                    "jpg", "jpeg" -> "image/jpeg"
+                    "png" -> "image/png"
+                    "gif" -> "image/gif"
+                    "mp4" -> "video/mp4"
+                    "mp3" -> "audio/mpeg"
+                    "zip" -> "application/zip"
+                    else -> "*/*"
+                }
+            
+            // Use FileProvider to create a safe URI for the file
+            val fileUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+            
+            // Create an Intent to open the file
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(fileUri, mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }

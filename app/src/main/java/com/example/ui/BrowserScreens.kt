@@ -2277,7 +2277,7 @@ fun SecurityCenterView(viewModel: BrowserViewModel) {
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Button(
                                             onClick = {
-                                                Toast.makeText(context, "Opening file: ${download.fileName}", Toast.LENGTH_SHORT).show()
+                                                viewModel.openDownload(download, context)
                                             }
                                         ) {
                                             Icon(
